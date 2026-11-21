@@ -1,0 +1,31 @@
+{
+  "name": "gflow-cli",
+  "version": "1.0.0",
+  "description": "Production-grade CLI for Google AI Flow (labs.google) image & video generation with Chrome CDP auth, credit guards, and SQLite asset catalog.",
+  "type": "module",
+  "bin": {
+    "gflow": "./bin/gflow.js"
+  },
+  "scripts": {
+    "test": "node --test test/gflow.test.js",
+    "start": "node ./bin/gflow.js"
+  },
+  "keywords": [
+    "google-flow",
+    "ai-studio",
+    "imagen",
+    "nano-banana",
+    "veo",
+    "cli",
+    "image-generation",
+    "video-generation"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "commander": "^13.1.0",
+    "playwright-core": "^1.51.1"
+  }
+}

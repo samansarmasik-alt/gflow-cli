@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="gflowGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4285F4"/>
+      <stop offset="50%" stop-color="#A142F4"/>
+      <stop offset="100%" stop-color="#F4428D"/>
+    </linearGradient>
+  </defs>
+  <rect x="14" y="14" width="100" height="100" rx="24" fill="url(#gflowGrad)"/>
+  <path d="M40 78 C46 52, 62 44, 88 46 C76 54, 70 64, 66 84 C62 72, 52 70, 40 78 Z" fill="#FFFFFF"/>
+  <circle cx="84" cy="78" r="9" fill="#FFE066"/>
+</svg>
