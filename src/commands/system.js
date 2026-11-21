@@ -292,11 +292,19 @@ export function registerSystemCommands(program) {
             when: 'Check if Google session is active before first generation.'
           },
           {
-            name: 'gflow image -p "<prompt>" [-m nano-banana|nano-banana-pro|imagen-4] [-a 16:9] [-q standard|high] [-n 1-4] [--ref <pathOrId>] [--ttl 5m] [--headed] [--agent-mode] --json',
-            when: 'Generate 0-credit images (optionally with reference image files or catalog IDs).'
+            name: 'gflow image -p "<prompt>" [--prompt-file prompt.txt] [--preset youtube-thumb|product-studio|cinematic|shorts|character-sheet|ui-icon] [-m nano-banana|nano-banana-pro|imagen-4] [-a 16:9] [-q standard|high] [-n 1-4] [--ref <pathOrId>] [--ttl 5m] [--dedupe] [--write-meta] [--headed] [--agent-mode] --json',
+            when: 'Generate 0-credit images (supports presets, prompt files, reference uploads, and idempotency cache).'
           },
           {
-            name: 'gflow video -p "<prompt>" [-m veo-3.1-lite] [-a 16:9] [-q 720p] [--first-frame <pathOrId>] [--last-frame <pathOrId>] [--ref <pathOrId>] --dry-run --json',
+            name: 'gflow batch <manifest.json> [--dry-run] [--resume] [--dedupe] [--confirm-credits] --json',
+            when: 'Run bulk image/video generation from a JSON manifest with lock-file resume and total credit guard.'
+          },
+          {
+            name: 'gflow preset list | show <name> | save <name> | delete <name> --json',
+            when: 'Manage reusable style/model/aspect presets (builtin and custom).'
+          },
+          {
+            name: 'gflow video -p "<prompt>" [--prompt-file scene.md] [-m veo-3.1-lite] [-a 16:9] [-q 720p] [--first-frame <pathOrId>] [--last-frame <pathOrId>] [--ref <pathOrId>] --dry-run --json',
             when: 'Estimate video credit cost BEFORE asking user approval; re-run with --confirm-credits after approval.'
           },
           {
@@ -308,8 +316,8 @@ export function registerSystemCommands(program) {
             when: 'Create a variation from an existing catalog ID with parent-child lineage.'
           },
           {
-            name: 'gflow list | show <id> | search <query> | tag <id> | export -o <dir> | prune | stats --json',
-            when: 'Inspect, search, organize, export, or safely clean up unmoved expired assets.'
+            name: 'gflow list | show <id> | search <query> | tag <id> | copy <id> <dest> | export -o <dir> | prune | stats --json',
+            when: 'Inspect, search, organize, copy, export, or safely clean up unmoved expired assets.'
           }
         ]
       };

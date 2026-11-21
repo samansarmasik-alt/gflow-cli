@@ -45,6 +45,7 @@ export function getPaths() {
     dbFile: path.join(home, 'catalog.sqlite'),
     profileDir: path.join(home, 'chrome-profile'),
     selectorsFile: path.join(home, 'selectors.json'),
+    presetsFile: path.join(home, 'presets.json'),
     outputRoot,
     imagesDir: path.join(outputRoot, 'images'),
     videosDir: path.join(outputRoot, 'videos'),

@@ -7,6 +7,7 @@ import { registerAuthCommands } from '../src/commands/auth.js';
 import { registerCatalogCommands } from '../src/commands/catalog-cmd.js';
 import { registerGenerateCommands } from '../src/commands/generate.js';
 import { registerSystemCommands } from '../src/commands/system.js';
+import { registerWorkflowCommands } from '../src/commands/workflow.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
@@ -23,6 +24,7 @@ program
 registerAuthCommands(program);
 registerGenerateCommands(program);
 registerCatalogCommands(program);
+registerWorkflowCommands(program);
 registerSystemCommands(program);
 
 program.parseAsync(process.argv).catch((err) => {

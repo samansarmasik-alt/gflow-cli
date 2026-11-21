@@ -256,6 +256,19 @@ export function getAsset(id) {
   return hydrateAsset(row);
 }
 
+export function findDuplicateAsset({ type, prompt, model, aspectRatio, quality }) {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT * FROM assets
+       WHERE type = ? AND prompt = ? AND model = ? AND aspect_ratio = ? AND quality = ?
+       ORDER BY created_at DESC LIMIT 5`
+    )
+    .all(type, prompt, model, aspectRatio, quality)
+    .map(hydrateAsset);
+  return rows.find((a) => a.fileExists) || null;
+}
+
 export function getAssetLineage(id) {
   const db = getDb();
   const asset = getAsset(id);

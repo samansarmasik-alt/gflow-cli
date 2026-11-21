@@ -4,12 +4,26 @@ Google hesabınızla (Gmail) **Google AI Flow** (`labs.google/fx/tools/flow`) ü
 
 ## Özellikler
 
-- **Doğal Google Oturumu (Chrome CDP):** Bot korumasına takılmadan bilgisayardaki gerçek Chrome'u izole bir profille (`~/.gflow/chrome-profile`) açar.
-- **Ücretsiz Fotoğraf Üretimi:** `nano-banana`, `nano-banana-pro`, `imagen-4` modelleriyle varsayılan 0 kredi üretim.
-- **Kredi Güvenlik Kilidi:** Video üretimi (`veo-3.1-lite`, `veo-3.1-fast`, `veo-3.1-quality`, `omni-flash-1.2`) ve 0'dan fazla kredi harcayan tüm işlemler `--confirm-credits` olmadan **asla** çalışmaz; önce maliyet ve bakiye özetini döner (`exit code 2`).
-- **Benzersiz ID & SQLite Katalog:** Her çıktı `img_0001`, `vid_0001` ID'siyle; prompt, negative prompt, model, oran, kalite, kredi, SHA-256, proje, etiket ve soy ağacı (`parentId`) bilgileriyle saklanır.
-- **Remix & Animate:** Var olan bir `img_0001` ID'sinden yeni varyasyon (`gflow remix img_0001`) veya video (`gflow animate img_0001`) üretin.
-- **AI Ajan Dostu:** Tüm komutlar `--json` destekler.
+- **Doğal Google Oturumu (Chrome CDP):** Bot korumasına takılmadan bilgisayardaki gerçek Chrome'u izole bir profille (`~/.gflow/chrome-profile`) açar. Varsayılan **headless** (arka planda görünmez), `--headed` ile görünür.
+- **Ücretsiz Fotoğraf Üretimi:** `nano-banana`, `nano-banana-pro` (2.1), `imagen-4` modelleriyle varsayılan 0 kredi üretim.
+- **Agent Mode & Modal Koruması:** Google Flow Ajan Modu varsayılan kapalı tutulur (`--agent-mode` ile açılır); güncelleme / "Yenilikler" dialog'ları otomatik kapatılır.
+- **Kredi Güvenlik Kilidi:** Video üretimi (`veo-3.1-lite`, `veo-3.1-fast`, `veo-3.1-quality`, `omni-flash-1.2`) ve 0'dan fazla kredi harcayan tüm işlemler `--confirm-credits` olmadan **asla** çalışmaz (`exit code 2`).
+- **Stil Presetleri (`gflow preset`):** `youtube-thumb`, `product-studio`, `cinematic`, `shorts`, `character-sheet`, `ui-icon` hazır profilleri + özel preset kaydetme.
+- **Batch Manifest & Resume (`gflow batch`):** JSON manifest ile toplu üretim, `--dry-run` toplam kredi hesabı, `.lock.json` ile kaldığı yerden devam (`--resume`) ve `--dedupe` cache.
+- **Prompt Dosyası & Referans Yükleme:** Uzun promptlar için `--prompt-file`, çoklu referans görsel/ID yükleme (`--ref photo.png,img_0001`), sidecar `--write-meta` ve geçici dosyalar için `--ttl` + `gflow prune`.
+- **Benzersiz ID & SQLite Katalog:** Her çıktı `img_0001`, `vid_0001` ID'siyle; prompt, model, oran, kalite, kredi, SHA-256, proje, etiket ve soy ağacı (`parentId`) bilgileriyle saklanır.
+- **AI Ajan Dostu:** Tüm komutlar `--json` destekler ve `gflow schema` tek seferde makine-okunabilir rehber döner.
+
+## Kurulum
+
+```bash
+git clone https://github.com/samansarmasik-alt/gflow-cli.git
+cd gflow-cli
+npm install
+npm link
+```
+
+Antigravity eklentisini kurmak için `plugin/` klasörünü `~/.gemini/config/plugins/google-flow/` altına kopyalamanız yeterlidir.
 
 ## Hızlı Başlangıç
 

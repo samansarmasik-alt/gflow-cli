@@ -1,6 +1,8 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import {
   createJob,
+  findDuplicateAsset,
   getAsset,
   nextId,
   pruneExpiredAssets,
@@ -16,13 +18,41 @@ import {
   resolveModel
 } from '../models.js';
 import { c, EXIT_CODES, formatBytes, printError, printJson } from '../output.js';
+import { applyPresetToOptions, getPreset } from '../presets.js';
 
-async function executeGeneration(type, opts) {
+export async function executeGeneration(type, rawOpts, { silent = false } = {}) {
   const cfg = loadConfig();
   const paths = ensureDirs();
 
+  let opts = { ...rawOpts };
+
+  // Prompt dosyasından okuma (--prompt-file)
+  if (opts.promptFile) {
+    const pFile = path.resolve(opts.promptFile);
+    if (!fs.existsSync(pFile)) {
+      const msg = `Prompt dosyası bulunamadı: ${pFile}`;
+      if (!silent) printError(msg, { json: opts.json, exitCode: EXIT_CODES.NOT_FOUND });
+      return { ok: false, code: 'NOT_FOUND', error: msg };
+    }
+    const filePrompt = fs.readFileSync(pFile, 'utf8').trim();
+    opts.prompt = opts.prompt ? `${filePrompt}\n${opts.prompt}` : filePrompt;
+  }
+
+  // Preset uygulama (--preset)
+  if (opts.preset) {
+    const preset = getPreset(opts.preset);
+    if (!preset) {
+      const msg = `Bilinmeyen preset: "${opts.preset}". Listelemek için: gflow preset list`;
+      if (!silent) printError(msg, { json: opts.json, exitCode: EXIT_CODES.NOT_FOUND });
+      return { ok: false, code: 'NOT_FOUND', error: msg };
+    }
+    opts = applyPresetToOptions(opts, preset);
+  }
+
   if (!opts.prompt || !String(opts.prompt).trim()) {
-    return printError('Prompt boş olamaz. `-p "..."` parametresi verin.', { json: opts.json });
+    const msg = 'Prompt boş olamaz. `-p "..."` veya `--prompt-file <dosya>` verin.';
+    if (!silent) printError(msg, { json: opts.json });
+    return { ok: false, code: 'ERROR', error: msg };
   }
 
   const rawModel = opts.model || (type === 'video' ? cfg.defaultVideoModel : cfg.defaultImageModel);
@@ -144,37 +174,72 @@ async function executeGeneration(type, opts) {
 
   // Dry-run: hiçbir şey üretmeden maliyeti ve planı döndür
   if (opts.dryRun) {
-    if (opts.json) {
-      printJson({ ok: true, dryRun: true, plan });
-    } else {
-      printPlanSummary(plan, true);
+    if (!silent) {
+      if (opts.json) {
+        printJson({ ok: true, dryRun: true, plan });
+      } else {
+        printPlanSummary(plan, true);
+      }
     }
-    return;
+    return { ok: true, dryRun: true, plan };
+  }
+
+  // Idempotency / Dedupe cache (--dedupe)
+  if (opts.dedupe) {
+    const cached = findDuplicateAsset({
+      type,
+      prompt: plan.prompt,
+      model: model.id,
+      aspectRatio,
+      quality
+    });
+    if (cached) {
+      const payload = {
+        ok: true,
+        cacheHit: true,
+        jobId: cached.jobId,
+        creditsSpent: 0,
+        assets: [cached]
+      };
+      if (!silent) {
+        if (opts.json) {
+          printJson(payload);
+        } else {
+          process.stdout.write(
+            `${c('cyan', '↺ Cache hit:')} ${c('bold', cached.id)} (${cached.filePath}) — yeniden üretim atlandı (0 kredi)\n`
+          );
+        }
+      }
+      return payload;
+    }
   }
 
   // KREDİ GÜVENLİK KİLİDİ: Video üretimi VEYA >0 kredi harcayan herhangi bir işlem
   // kullanıcı onayı (--confirm-credits) olmadan ASLA çalışmaz!
   if (estimate.requiresConfirmation && !opts.confirmCredits) {
-    if (opts.json) {
-      printJson({
-        ok: false,
-        code: 'CONFIRMATION_REQUIRED',
-        error:
-          type === 'video'
-            ? `Video üretimi kredi harcar (${estimate.estimatedTotalCredits} kredi). Kullanıcının açık onayını aldıktan sonra --confirm-credits ile çalıştırın.`
-            : `Bu ayar ${estimate.estimatedTotalCredits} kredi harcar. Onaylamak için --confirm-credits ekleyin.`,
-        plan
-      });
-    } else {
-      printPlanSummary(plan, false);
-      process.stderr.write(
-        `\n${c('yellow', '⚠ Kredi Onayı Gerekli:')} Bu işlem tahmini ${c('bold', `${estimate.estimatedTotalCredits} kredi`)} harcayacak` +
-          (currentBalance !== null ? ` (mevcut bakiye: ${c('cyan', currentBalance)})` : '') +
-          `.\n  Devam etmek için komutu ${c('cyan', '--confirm-credits')} bayrağıyla çalıştırın.\n`
-      );
+    const errPayload = {
+      ok: false,
+      code: 'CONFIRMATION_REQUIRED',
+      error:
+        type === 'video'
+          ? `Video üretimi kredi harcar (${estimate.estimatedTotalCredits} kredi). Kullanıcının açık onayını aldıktan sonra --confirm-credits ile çalıştırın.`
+          : `Bu ayar ${estimate.estimatedTotalCredits} kredi harcar. Onaylamak için --confirm-credits ekleyin.`,
+      plan
+    };
+    if (!silent) {
+      if (opts.json) {
+        printJson(errPayload);
+      } else {
+        printPlanSummary(plan, false);
+        process.stderr.write(
+          `\n${c('yellow', '⚠ Kredi Onayı Gerekli:')} Bu işlem tahmini ${c('bold', `${estimate.estimatedTotalCredits} kredi`)} harcayacak` +
+            (currentBalance !== null ? ` (mevcut bakiye: ${c('cyan', currentBalance)})` : '') +
+            `.\n  Devam etmek için komutu ${c('cyan', '--confirm-credits')} bayrağıyla çalıştırın.\n`
+        );
+      }
+      process.exitCode = EXIT_CODES.CONFIRMATION_REQUIRED;
     }
-    process.exitCode = EXIT_CODES.CONFIRMATION_REQUIRED;
-    return;
+    return errPayload;
   }
 
   const targetOutDir = opts.out
@@ -187,32 +252,70 @@ async function executeGeneration(type, opts) {
   const idPrefix = type === 'video' ? 'vid' : 'img';
   const preAllocatedIds = Array.from({ length: count }, () => nextId(idPrefix));
 
-  try {
-    const result = await runGeneration({
-      type,
-      prompt: plan.prompt,
-      negativePrompt: plan.negativePrompt,
-      modelId: model.id,
-      aspectRatio,
-      quality,
-      count,
-      duration,
-      audio: plan.audio,
-      agentMode,
-      headless,
-      refFiles: refResolved.map((r) => r.filePath),
-      firstFrameFile: firstFrameResolved?.filePath || null,
-      lastFrameFile: lastFrameResolved?.filePath || null,
-      outputDir: targetOutDir,
-      assetIds: preAllocatedIds,
-      estimatedCredits: estimate.estimatedTotalCredits,
-      confirmCredits: Boolean(opts.confirmCredits),
-      mock: Boolean(opts.mock),
-      onProgress: (msg) => {
-        if (!opts.json) process.stderr.write(`${c('gray', '…')} ${msg}\n`);
-      }
-    });
+  const maxRetries = Math.max(0, Number(opts.retries ?? 1) || 0);
+  let lastErr = null;
+  let result = null;
 
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      result = await runGeneration({
+        type,
+        prompt: plan.prompt,
+        negativePrompt: plan.negativePrompt,
+        modelId: model.id,
+        aspectRatio,
+        quality,
+        count,
+        duration,
+        audio: plan.audio,
+        agentMode,
+        headless,
+        refFiles: refResolved.map((r) => r.filePath),
+        firstFrameFile: firstFrameResolved?.filePath || null,
+        lastFrameFile: lastFrameResolved?.filePath || null,
+        outputDir: targetOutDir,
+        assetIds: preAllocatedIds,
+        estimatedCredits: estimate.estimatedTotalCredits,
+        confirmCredits: Boolean(opts.confirmCredits),
+        mock: Boolean(opts.mock),
+        onProgress: (msg) => {
+          if (!silent && !opts.json) process.stderr.write(`${c('gray', '…')} ${msg}\n`);
+        }
+      });
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (err.code === 'AUTH_REQUIRED' || err.code === 'CONFIRMATION_REQUIRED') break;
+      if (attempt < maxRetries) {
+        if (!silent && !opts.json) {
+          process.stderr.write(`${c('yellow', '↻')} Geçici hata, yeniden deneniyor (${attempt + 1}/${maxRetries})...\n`);
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  }
+
+  if (lastErr || !result) {
+    const err = lastErr || new Error('Üretim başarısız oldu.');
+    const exitCode =
+      err.code === 'AUTH_REQUIRED'
+        ? EXIT_CODES.AUTH_REQUIRED
+        : err.code === 'CONFIRMATION_REQUIRED'
+          ? EXIT_CODES.CONFIRMATION_REQUIRED
+          : EXIT_CODES.ERROR;
+    if (!silent) {
+      printError(err.message, {
+        json: opts.json,
+        code: err.code || 'GENERATION_FAILED',
+        exitCode,
+        details: err.liveCredits !== undefined ? { liveCredits: err.liveCredits } : null
+      });
+    }
+    return { ok: false, code: err.code || 'GENERATION_FAILED', error: err.message };
+  }
+
+  try {
     const job = createJob({
       type,
       prompt: plan.prompt,
@@ -232,8 +335,8 @@ async function executeGeneration(type, opts) {
     const perAssetCredits =
       result.files.length > 0 ? result.creditsSpent / result.files.length : 0;
 
-    const savedAssets = result.files.map((f) =>
-      recordAsset({
+    const savedAssets = result.files.map((f) => {
+      const saved = recordAsset({
         id: f.assetId,
         jobId: job.id,
         type,
@@ -256,8 +359,17 @@ async function executeGeneration(type, opts) {
         notes: opts.note || null,
         sourceUrl: f.sourceUrl,
         expiresAt
-      })
-    );
+      });
+
+      if (opts.writeMeta && saved?.filePath) {
+        try {
+          fs.writeFileSync(`${saved.filePath}.meta.json`, JSON.stringify(saved, null, 2) + '\n', 'utf8');
+        } catch {
+          // ignore sidecar write error
+        }
+      }
+      return saved;
+    });
 
     // Otomatik silme sadece kullanıcı açıkça açtıysa (autoPruneEnabled=true) çalışır
     let pruned = null;
@@ -268,47 +380,44 @@ async function executeGeneration(type, opts) {
       });
     }
 
-    if (opts.json) {
-      printJson({
-        ok: true,
-        jobId: job.id,
-        mock: Boolean(result.mock),
-        agentMode,
-        headless,
-        creditsSpent: result.creditsSpent,
-        remainingCredits: result.remainingCredits,
-        accountEmail: result.accountEmail,
-        ...(pruned && pruned.deletedCount > 0 ? { autoPruned: pruned.deletedCount } : {}),
-        assets: savedAssets
-      });
-    } else {
-      process.stdout.write(
-        `${c('green', '✓')} ${savedAssets.length} ${type === 'video' ? 'video' : 'fotoğraf'} üretildi ` +
-          `(${c('cyan', job.id)} | Harcanan: ${c('yellow', `${result.creditsSpent} kredi`)}` +
-          (result.remainingCredits !== null && result.remainingCredits !== undefined
-            ? ` | Kalan: ${c('cyan', result.remainingCredits)}`
-            : '') +
-          `)\n`
-      );
-      for (const a of savedAssets) {
+    const outPayload = {
+      ok: true,
+      jobId: job.id,
+      mock: Boolean(result.mock),
+      agentMode,
+      headless,
+      creditsSpent: result.creditsSpent,
+      remainingCredits: result.remainingCredits,
+      accountEmail: result.accountEmail,
+      ...(pruned && pruned.deletedCount > 0 ? { autoPruned: pruned.deletedCount } : {}),
+      assets: savedAssets
+    };
+
+    if (!silent) {
+      if (opts.json) {
+        printJson(outPayload);
+      } else {
         process.stdout.write(
-          `  ${c('bold', a.id)}  ${a.aspectRatio}  ${a.model}  ${formatBytes(a.fileSize)}  ${a.filePath}\n`
+          `${c('green', '✓')} ${savedAssets.length} ${type === 'video' ? 'video' : 'fotoğraf'} üretildi ` +
+            `(${c('cyan', job.id)} | Harcanan: ${c('yellow', `${result.creditsSpent} kredi`)}` +
+            (result.remainingCredits !== null && result.remainingCredits !== undefined
+              ? ` | Kalan: ${c('cyan', result.remainingCredits)}`
+              : '') +
+            `)\n`
         );
+        for (const a of savedAssets) {
+          process.stdout.write(
+            `  ${c('bold', a.id)}  ${a.aspectRatio}  ${a.model}  ${formatBytes(a.fileSize)}  ${a.filePath}\n`
+          );
+        }
       }
     }
+    return outPayload;
   } catch (err) {
-    const exitCode =
-      err.code === 'AUTH_REQUIRED'
-        ? EXIT_CODES.AUTH_REQUIRED
-        : err.code === 'CONFIRMATION_REQUIRED'
-          ? EXIT_CODES.CONFIRMATION_REQUIRED
-          : EXIT_CODES.ERROR;
-    printError(err.message, {
-      json: opts.json,
-      code: err.code || 'GENERATION_FAILED',
-      exitCode,
-      details: err.liveCredits !== undefined ? { liveCredits: err.liveCredits } : null
-    });
+    if (!silent) {
+      printError(err.message, { json: opts.json, code: 'CATALOG_ERROR' });
+    }
+    return { ok: false, code: 'CATALOG_ERROR', error: err.message };
   }
 }
 
@@ -335,11 +444,13 @@ export function registerGenerateCommands(program) {
     .command('image')
     .alias('img')
     .description('Google Flow ile fotoğraf üretir (varsayılan 0 kredi / ücretsiz)')
-    .requiredOption('-p, --prompt <text>', 'Fotoğraf açıklaması (prompt)')
+    .option('-p, --prompt <text>', 'Fotoğraf açıklaması (prompt)')
+    .option('--prompt-file <path>', 'Promptu metin/markdown dosyasından oku')
+    .option('--preset <name>', 'Hazır veya özel stil preseti uygula (gflow preset list)')
     .option('--negative <text>', 'İstenmeyen öğeler (negative prompt)')
     .option('-m, --model <model>', 'Model (nano-banana, nano-banana-pro, imagen-4)')
     .option('-a, --aspect <ratio>', 'En-boy oranı (1:1, 4:3, 3:4, 16:9, 9:16, 3:2, 2:3)')
-    .option('-q, --quality <quality>', 'Kalite (standard, high, 1k, 2k, 4k)')
+    .option('-q, --quality <quality>', 'Kalite (low, standard, medium, high, 1k, 2k, 4k)')
     .option('-n, --count <number>', 'Üretilecek fotoğraf sayısı (1-4)')
     .option('--ref <pathOrId...>', 'Referans görsel dosya yolu veya img_XXXX ID')
     .option('--seed <seed>', 'Seed değeri')
@@ -348,6 +459,9 @@ export function registerGenerateCommands(program) {
     .option('--note <text>', 'Katalog notu')
     .option('-o, --out <dir>', 'Özel çıktı klasörü')
     .option('--ttl <duration>', 'Taşınmadığı sürece otomatik silinme süresi (örn: 24h, 7d)')
+    .option('--dedupe', 'Aynı prompt+ayar zaten üretildiyse yeniden üretmeden cache dön')
+    .option('--retries <n>', 'Geçici hatalarda yeniden deneme sayısı', '1')
+    .option('--write-meta', 'Dosyanın yanına .meta.json metadata dosyası yaz')
     .option('--agent-mode', 'Google Flow Ajan Modunu aç (varsayılan kapalı)')
     .option('--headed', 'Tarayıcıyı görünür pencerede aç (varsayılan headless)')
     .option('--visible', '--headed ile aynı')
@@ -363,7 +477,9 @@ export function registerGenerateCommands(program) {
     .command('video')
     .alias('vid')
     .description('Google Flow ile video üretir (kredi onayı zorunludur)')
-    .requiredOption('-p, --prompt <text>', 'Video açıklaması (prompt)')
+    .option('-p, --prompt <text>', 'Video açıklaması (prompt)')
+    .option('--prompt-file <path>', 'Promptu metin/markdown dosyasından oku')
+    .option('--preset <name>', 'Hazır veya özel preset uygula')
     .option('--negative <text>', 'İstenmeyen öğeler')
     .option('-m, --model <model>', 'Model (veo-3.1-lite, veo-3.1-fast, veo-3.1-quality, omni-flash-1.2)')
     .option('-a, --aspect <ratio>', 'En-boy oranı (16:9, 9:16, 1:1)')
@@ -379,6 +495,9 @@ export function registerGenerateCommands(program) {
     .option('--note <text>', 'Katalog notu')
     .option('-o, --out <dir>', 'Özel çıktı klasörü')
     .option('--ttl <duration>', 'Taşınmadığı sürece otomatik silinme süresi (örn: 24h, 7d)')
+    .option('--dedupe', 'Aynı prompt+ayar zaten üretildiyse cache dön')
+    .option('--retries <n>', 'Geçici hatalarda yeniden deneme sayısı', '1')
+    .option('--write-meta', 'Dosyanın yanına .meta.json metadata dosyası yaz')
     .option('--agent-mode', 'Google Flow Ajan Modunu aç (varsayılan kapalı)')
     .option('--headed', 'Tarayıcıyı görünür pencerede aç (varsayılan headless)')
     .option('--visible', '--headed ile aynı')

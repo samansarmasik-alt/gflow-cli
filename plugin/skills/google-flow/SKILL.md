@@ -109,6 +109,22 @@ Every generated file is stored in SQLite (`~/.gflow/catalog.sqlite`) with sequen
   ```bash
   gflow export -o ./exports/kapak --project youtube --favorites --json
   ```
+- **Copy an asset by ID to another folder:** `gflow copy img_0001 ./public/hero.webp --json`
+- **Style presets (`youtube-thumb`, `product-studio`, `cinematic`, `shorts`, `character-sheet`, `ui-icon` + custom):**
+  ```bash
+  gflow preset list --json
+  gflow image -p "Retro mechanical keyboard" --preset product-studio --json
+  gflow preset save my-brand -m nano-banana-pro -a 16:9 -q high --suffix "brand palette neon teal and obsidian"
+  ```
+- **Long prompts from file & idempotency cache:**
+  ```bash
+  gflow image --prompt-file ./prompt.txt --dedupe --write-meta --json
+  ```
+- **Batch manifest generation (with resume & credit guard):**
+  ```bash
+  gflow batch ./jobs.json --dry-run --json
+  gflow batch ./jobs.json --resume --dedupe --json
+  ```
 - **Usage statistics:** `gflow stats --json`
 
 ## 6. Diagnostics, Agent Schema & UI Calibration

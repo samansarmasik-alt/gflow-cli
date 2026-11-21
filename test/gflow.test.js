@@ -265,4 +265,93 @@ describe('gflow CLI end-to-end', () => {
     assert.equal(gen.ok, true);
     assert.ok(gen.assets[0].refIds.includes('img_0001'));
   });
+
+  it('supports builtin & custom presets, --prompt-file, --dedupe cache, --write-meta, and copy', () => {
+    const presets = JSON.parse(runGflow(['preset', 'list', '--json']).stdout);
+    assert.ok(presets.presets.some((p) => p.name === 'character-sheet'));
+
+    const saved = JSON.parse(
+      runGflow([
+        'preset', 'save', 'brand-test',
+        '-m', 'nano-banana-pro',
+        '-a', '1:1',
+        '-q', 'high',
+        '--suffix', 'obsidian minimalism',
+        '--json'
+      ]).stdout
+    );
+    assert.equal(saved.preset.name, 'brand-test');
+
+    const promptFile = path.join(tmpHome, 'long-prompt.txt');
+    fs.writeFileSync(promptFile, 'Sleek titanium smartwatch on dark stone', 'utf8');
+
+    const first = JSON.parse(
+      runGflow([
+        'image',
+        '--prompt-file', promptFile,
+        '--preset', 'brand-test',
+        '--write-meta',
+        '--mock',
+        '--json'
+      ]).stdout
+    );
+    assert.equal(first.ok, true);
+    assert.match(first.assets[0].prompt, /obsidian minimalism/);
+    assert.ok(fs.existsSync(`${first.assets[0].filePath}.meta.json`));
+
+    // Aynı prompt+preset ile --dedupe cache hit dönmeli (0 yeni dosya)
+    const cached = JSON.parse(
+      runGflow([
+        'image',
+        '--prompt-file', promptFile,
+        '--preset', 'brand-test',
+        '--dedupe',
+        '--mock',
+        '--json'
+      ]).stdout
+    );
+    assert.equal(cached.ok, true);
+    assert.equal(cached.cacheHit, true);
+    assert.equal(cached.assets[0].id, first.assets[0].id);
+
+    // copy komutu
+    const copyDest = path.join(tmpHome, 'copied-watch.png');
+    const copied = JSON.parse(runGflow(['copy', first.assets[0].id, copyDest, '--json']).stdout);
+    assert.equal(copied.ok, true);
+    assert.ok(fs.existsSync(copyDest));
+
+    const delPreset = JSON.parse(runGflow(['preset', 'delete', 'brand-test', '--json']).stdout);
+    assert.equal(delPreset.ok, true);
+  });
+
+  it('runs batch manifest with dry-run, credit guard, and --resume lock file', () => {
+    const manifestPath = path.join(tmpHome, 'campaign.json');
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        defaults: { project: 'q4', model: 'nano-banana', aspect: '16:9' },
+        jobs: [
+          { key: 'banner-1', prompt: 'Minimalist SaaS hero banner, blue glow' },
+          { key: 'banner-2', prompt: 'Clean dark dashboard preview', preset: 'ui-icon' }
+        ]
+      }),
+      'utf8'
+    );
+
+    const dry = JSON.parse(runGflow(['batch', manifestPath, '--dry-run', '--mock', '--json']).stdout);
+    assert.equal(dry.ok, true);
+    assert.equal(dry.totalJobs, 2);
+    assert.equal(dry.totalEstimatedCredits, 0);
+
+    const run1 = JSON.parse(runGflow(['batch', manifestPath, '--mock', '--json']).stdout);
+    assert.equal(run1.ok, true);
+    assert.equal(run1.completed, 2);
+    assert.ok(fs.existsSync(`${manifestPath}.lock.json`));
+
+    // --resume tüm tamamlananları atlamalı
+    const run2 = JSON.parse(runGflow(['batch', manifestPath, '--resume', '--mock', '--json']).stdout);
+    assert.equal(run2.ok, true);
+    assert.equal(run2.completed, 0);
+    assert.equal(run2.skipped, 2);
+  });
 });
