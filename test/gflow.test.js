@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { createHumanizer } from '../src/humanizer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, '..', 'bin', 'gflow.js');
@@ -353,5 +354,43 @@ describe('gflow CLI end-to-end', () => {
     assert.equal(run2.ok, true);
     assert.equal(run2.completed, 0);
     assert.equal(run2.skipped, 2);
+  });
+
+  it('uses randomized per-run seed for humanized Bezier mouse paths and supports --human-seed / --no-humanize', () => {
+    // 1) Aynı seed deterministik olarak aynı persona ve Bézier yolunu üretir
+    const h1 = createHumanizer({ seed: 123456 });
+    const h2 = createHumanizer({ seed: 123456 });
+    assert.deepEqual(h1.persona, h2.persona);
+    assert.deepEqual(
+      h1.generateMousePath({ x: 100, y: 100 }, { x: 650, y: 420 }),
+      h2.generateMousePath({ x: 100, y: 100 }, { x: 650, y: 420 })
+    );
+
+    // 2) Farklı seed farklı yol üretir
+    const h3 = createHumanizer({ seed: 987654 });
+    const p1 = h1.generateMousePath({ x: 100, y: 100 }, { x: 650, y: 420 });
+    const p3 = h3.generateMousePath({ x: 100, y: 100 }, { x: 650, y: 420 });
+    assert.ok(p1.length >= 10);
+    assert.notDeepEqual(p1, p3);
+
+    // 3) CLI her çalışmada rastgele yeni seed seçer
+    const a = JSON.parse(runGflow(['image', '-p', 'Humanizer run A', '--mock', '--json']).stdout);
+    const b = JSON.parse(runGflow(['image', '-p', 'Humanizer run B', '--mock', '--json']).stdout);
+    assert.equal(a.humanize, true);
+    assert.equal(typeof a.humanSeed, 'number');
+    assert.equal(typeof b.humanSeed, 'number');
+    assert.notEqual(a.humanSeed, b.humanSeed);
+
+    // 4) --human-seed sabitleme ve --no-humanize kapatma
+    const pinned = JSON.parse(
+      runGflow(['image', '-p', 'Humanizer pinned', '--human-seed', '424242', '--mock', '--json']).stdout
+    );
+    assert.equal(pinned.humanize, true);
+    assert.equal(pinned.humanSeed, 424242);
+
+    const disabled = JSON.parse(
+      runGflow(['image', '-p', 'Humanizer off', '--no-humanize', '--mock', '--json']).stdout
+    );
+    assert.equal(disabled.humanize, false);
   });
 });

@@ -130,6 +130,8 @@ export async function executeGeneration(type, rawOpts, { silent = false } = {}) 
 
   const agentMode = opts.agentMode !== undefined ? Boolean(opts.agentMode) : Boolean(cfg.defaultAgentMode);
   const headless = opts.headed || opts.visible ? false : Boolean(cfg.headless);
+  const humanize = opts.humanize !== undefined ? Boolean(opts.humanize) : Boolean(cfg.humanize);
+  const humanSeed = opts.humanSeed ?? null;
 
   let expiresAt = null;
   if (opts.ttl) {
@@ -156,6 +158,8 @@ export async function executeGeneration(type, rawOpts, { silent = false } = {}) 
     audio: type === 'video' ? opts.audio !== false : null,
     agentMode,
     headless,
+    humanize,
+    humanSeed,
     expiresAt,
     estimatedCredits: estimate.estimatedTotalCredits,
     creditsPerItem: estimate.creditsPerItem,
@@ -270,6 +274,8 @@ export async function executeGeneration(type, rawOpts, { silent = false } = {}) 
         audio: plan.audio,
         agentMode,
         headless,
+        humanize,
+        humanSeed,
         refFiles: refResolved.map((r) => r.filePath),
         firstFrameFile: firstFrameResolved?.filePath || null,
         lastFrameFile: lastFrameResolved?.filePath || null,
@@ -386,6 +392,8 @@ export async function executeGeneration(type, rawOpts, { silent = false } = {}) 
       mock: Boolean(result.mock),
       agentMode,
       headless,
+      humanize: result.humanize ?? humanize,
+      humanSeed: result.humanSeed ?? humanSeed,
       creditsSpent: result.creditsSpent,
       remainingCredits: result.remainingCredits,
       accountEmail: result.accountEmail,
@@ -462,6 +470,8 @@ export function registerGenerateCommands(program) {
     .option('--dedupe', 'Aynı prompt+ayar zaten üretildiyse yeniden üretmeden cache dön')
     .option('--retries <n>', 'Geçici hatalarda yeniden deneme sayısı', '1')
     .option('--write-meta', 'Dosyanın yanına .meta.json metadata dosyası yaz')
+    .option('--human-seed <seed>', 'İnsansı fare/klavye hareketleri için seed (boş bırakılırsa her çalışmada rastgele)')
+    .option('--no-humanize', 'İnsansı fare/klavye hareketlerini kapat')
     .option('--agent-mode', 'Google Flow Ajan Modunu aç (varsayılan kapalı)')
     .option('--headed', 'Tarayıcıyı görünür pencerede aç (varsayılan headless)')
     .option('--visible', '--headed ile aynı')
@@ -498,6 +508,8 @@ export function registerGenerateCommands(program) {
     .option('--dedupe', 'Aynı prompt+ayar zaten üretildiyse cache dön')
     .option('--retries <n>', 'Geçici hatalarda yeniden deneme sayısı', '1')
     .option('--write-meta', 'Dosyanın yanına .meta.json metadata dosyası yaz')
+    .option('--human-seed <seed>', 'İnsansı fare/klavye hareketleri için seed (boş bırakılırsa her çalışmada rastgele)')
+    .option('--no-humanize', 'İnsansı fare/klavye hareketlerini kapat')
     .option('--agent-mode', 'Google Flow Ajan Modunu aç (varsayılan kapalı)')
     .option('--headed', 'Tarayıcıyı görünür pencerede aç (varsayılan headless)')
     .option('--visible', '--headed ile aynı')

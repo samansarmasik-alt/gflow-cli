@@ -62,6 +62,7 @@ gflow image \
 - `--ref <pathOrId>`: attach a local file path OR a previously generated asset ID like `img_0001`
 - `--agent-mode`: enable Google Flow Agent Mode (default is OFF — Flow Agent is automatically turned off for direct generation)
 - `--headed` / `--visible`: open Chrome visibly (default is headless in background)
+- `--human-seed <seed>` / `--no-humanize`: humanized Bezier mouse paths & natural typing rhythm are ON by default with a fresh random seed per run
 - `--ttl <duration>`: optional auto-expiration for unmoved files (e.g. `24h`, `7d`)
 - `--project`, `--tag`, `--note`, `-o/--out`
 

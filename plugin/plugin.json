@@ -2,7 +2,7 @@
   "name": "google-flow",
   "displayName": "Google Flow Studio",
   "description": "Generate unlimited free images and credit-guarded videos via Google AI Flow using the gflow CLI, with automatic ID tracking, prompt history, remixing, and image-to-video workflows.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
     "Generate 2 free 16:9 minimalist tech blog cover images using Google Flow",

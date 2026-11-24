@@ -8,6 +8,7 @@ export const DEFAULT_CONFIG = {
   cdpPort: 9222,
   chromePath: null, // auto-detected if null
   headless: true, // varsayılan arka planda görünmez; --headed ile görünür açılır
+  humanize: true, // varsayılan insansı fare/klavye hareketleri (her çalışmada rastgele seed)
   defaultAgentMode: false, // varsayılan KAPALI; --agent-mode ile açılır
   autoDismissModals: true, // güncelleme / yenilikler ekranlarını otomatik kapat
   autoPruneEnabled: false, // varsayılan KAPALI; açılırsa taşınmayan eski dosyaları siler

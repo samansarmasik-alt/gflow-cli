@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
@@ -104,7 +104,7 @@ export async function launchManagedChrome({ url = null, port = null, headless = 
   if (runHeadless) {
     args.push('--headless=new');
   } else {
-    args.push('--new-window');
+    args.push('--new-window', '--window-position=80,50');
   }
 
   if (url) args.push(url);
@@ -141,8 +141,11 @@ export async function connectToFlowPage({ autoLaunch = true, targetUrl = null, h
   const cfg = loadConfig();
   const cdpPort = cfg.cdpPort || 9222;
   const flowUrl = targetUrl || cfg.flowUrl;
+  const wantVisible = headless === false || (headless === null && cfg.headless === false);
 
   let alive = await isCdpAlive(cdpPort);
+  const aliveIsHeadless = Boolean(alive && /HeadlessChrome/i.test(alive['User-Agent'] || ''));
+
   if (!alive) {
     if (!autoLaunch) {
       throw new Error(
@@ -150,6 +153,9 @@ export async function connectToFlowPage({ autoLaunch = true, targetUrl = null, h
       );
     }
     await launchManagedChrome({ url: flowUrl, port: cdpPort, headless });
+  } else if (wantVisible && aliveIsHeadless) {
+    // Mevcut Chrome headless çalışıyorsa kapatıp görünür pencerede yeniden başlat
+    await launchManagedChrome({ url: flowUrl, port: cdpPort, headless: false });
   }
 
   const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
@@ -164,8 +170,8 @@ export async function connectToFlowPage({ autoLaunch = true, targetUrl = null, h
     await page.goto(flowUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   }
 
-  if (headless === false) {
-    await page.bringToFront().catch(() => {});
+  if (wantVisible) {
+    await bringPageToFront(context, page).catch(() => {});
   }
 
   return {
@@ -182,6 +188,23 @@ export async function connectToFlowPage({ autoLaunch = true, targetUrl = null, h
   };
 }
 
+async function bringPageToFront(context, page) {
+  await page.bringToFront().catch(() => {});
+  try {
+    const cdp = await context.newCDPSession(page);
+    const { windowId } = await cdp.send('Browser.getWindowForTarget');
+    if (windowId) {
+      await cdp.send('Browser.setWindowBounds', {
+        windowId,
+        bounds: { windowState: 'normal' }
+      }).catch(() => {});
+    }
+    await cdp.detach().catch(() => {});
+  } catch {
+    // ignore
+  }
+}
+
 async function closeExistingCdpBrowser(port) {
   try {
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
@@ -191,9 +214,26 @@ async function closeExistingCdpBrowser(port) {
   } catch {
     // ignore
   }
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + 4000;
   while (Date.now() < deadline) {
     if (!(await isCdpAlive(port))) return;
     await new Promise((r) => setTimeout(r, 250));
+  }
+  // Windows'ta headless Chrome CDP üzerinden kapanmadıysa sadece ilgili portun sürecini kapat
+  if (process.platform === 'win32') {
+    try {
+      execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-Command',
+          `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object { $_.CommandLine -like '*remote-debugging-port=${port}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`
+        ],
+        { stdio: 'ignore', timeout: 5000 }
+      );
+      await new Promise((r) => setTimeout(r, 600));
+    } catch {
+      // ignore
+    }
   }
 }

@@ -25,12 +25,24 @@ export const MODEL_CATALOG = {
     maxCount: 4,
     notes: 'Ücretsiz / 0 kredi hızlı fotoğraf üretimi (4K upscale hariç).'
   },
+  'nano-banana-2.1': {
+    id: 'nano-banana-2.1',
+    displayName: 'Nano Banana 2.1',
+    aliases: ['2.1', 'nb-2.1', 'nb2.1', 'banana-2.1', 'nanobanana-2.1'],
+    type: 'image',
+    uiLabels: ['Nano Banana 2.1'],
+    baseCredits: 0,
+    qualityMultiplier: { low: 0, standard: 0, medium: 0, high: 0, '1k': 0, '2k': 0, '4k': 5 },
+    aspectRatios: IMAGE_ASPECT_RATIOS,
+    maxCount: 4,
+    notes: 'Google Flow Nano Banana 2.1 modeli (0 kredi / ücretsiz, 4K upscale hariç).'
+  },
   'nano-banana-pro': {
     id: 'nano-banana-pro',
     displayName: 'Nano Banana Pro',
     aliases: ['nb-pro', 'banana-pro', 'pro'],
     type: 'image',
-    uiLabels: ['Nano Banana Pro', 'Nano Banana 2.1'],
+    uiLabels: ['Nano Banana Pro'],
     baseCredits: 0,
     qualityMultiplier: { standard: 0, high: 0, '1k': 0, '2k': 2, '4k': 5 },
     aspectRatios: IMAGE_ASPECT_RATIOS,

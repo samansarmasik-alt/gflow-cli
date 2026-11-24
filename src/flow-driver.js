@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { connectToFlowPage, launchManagedChrome } from './browser.js';
 import { ensureDirs, loadConfig } from './config.js';
+import { createHumanizer } from './humanizer.js';
 import { resolveModel } from './models.js';
 
 // Geçerli minimal 1x1 PNG (mock/test modu için)
@@ -135,13 +136,16 @@ export async function dismissModals(page) {
  * Varsayılan: enabled = false (Ajan modu KAPALI, doğrudan üretim).
  * --agent-mode verilirse enabled = true (Ajan modu AÇIK).
  */
-export async function setAgentMode(page, enabled = false) {
+export async function setAgentMode(page, enabled = false, human = null) {
+  const click = async (loc) => (human ? human.clickLocator(page, loc) : loc.click());
+
   // 1) Ajan modu kapalı isteniyorsa ve sağda ajan paneli açıksa kapat
   if (!enabled) {
     const closeRight = page.locator('button:has-text("right_panel_close")').first();
     if (await closeRight.isVisible().catch(() => false)) {
-      await closeRight.click().catch(() => {});
-      await new Promise((r) => setTimeout(r, 450));
+      await click(closeRight).catch(() => {});
+      if (human) await human.pause(240, 480);
+      else await new Promise((r) => setTimeout(r, 450));
     }
   }
 
@@ -155,8 +159,9 @@ export async function setAgentMode(page, enabled = false) {
   if (await agentBtn.isVisible().catch(() => false)) {
     const pressed = (await agentBtn.getAttribute('aria-pressed')) === 'true';
     if (pressed !== Boolean(enabled)) {
-      await agentBtn.click().catch(() => {});
-      await new Promise((r) => setTimeout(r, 500));
+      await click(agentBtn).catch(() => {});
+      if (human) await human.pause(260, 520);
+      else await new Promise((r) => setTimeout(r, 500));
     }
     return {
       found: true,
@@ -328,6 +333,8 @@ export async function runGeneration(spec) {
     audio = true,
     agentMode = false,
     headless = null,
+    humanize = true,
+    humanSeed = null,
     refFiles = [],
     firstFrameFile = null,
     lastFrameFile = null,
@@ -339,8 +346,10 @@ export async function runGeneration(spec) {
 
   fs.mkdirSync(outputDir, { recursive: true });
 
+  const human = createHumanizer({ seed: humanSeed, enabled: Boolean(humanize) });
+
   if (isMockMode({ mock })) {
-    return runMockGeneration({
+    const mockRes = runMockGeneration({
       type,
       modelId,
       aspectRatio,
@@ -349,6 +358,7 @@ export async function runGeneration(spec) {
       assetIds,
       estimatedCredits: spec.estimatedCredits ?? 0
     });
+    return { ...mockRes, humanize: human.enabled, humanSeed: human.seed };
   }
 
   const cfg = loadConfig();
@@ -366,35 +376,42 @@ export async function runGeneration(spec) {
       throw err;
     }
 
-    onProgress('Workspace hazırlanıyor...');
-    await ensureWorkspaceOpen(conn.page);
+    onProgress(
+      `Workspace hazırlanıyor...${human.enabled ? ` (humanizer seed: ${human.seed})` : ''}`
+    );
+    await ensureWorkspaceOpen(conn.page, human);
     if (cfg.autoDismissModals) await dismissModals(conn.page);
+    await human.idleWander(conn.page);
 
     // Agent Mode varsayılan KAPALI; sadece --agent-mode ile açılır
     onProgress(`Ajan modu ${agentMode ? 'açılıyor' : 'kapatılıyor'}...`);
-    await setAgentMode(conn.page, Boolean(agentMode));
+    await setAgentMode(conn.page, Boolean(agentMode), human);
 
     onProgress(`Ayarlar uygulanıyor (${type} / ${model?.displayName || modelId} / ${aspectRatio} / x${count})...`);
-    await applySettingsOnPage(conn.page, {
-      type,
-      model,
-      aspectRatio,
-      quality,
-      count,
-      duration,
-      audio
-    });
+    await applySettingsOnPage(
+      conn.page,
+      {
+        type,
+        model,
+        aspectRatio,
+        quality,
+        count,
+        duration,
+        audio
+      },
+      human
+    );
 
     const uploads = [firstFrameFile, lastFrameFile, ...refFiles].filter(Boolean);
     if (uploads.length > 0) {
       onProgress(`${uploads.length} referans/kare dosyası yükleniyor...`);
-      await uploadReferenceFiles(conn.page, uploads);
+      await uploadReferenceFiles(conn.page, uploads, human);
     }
 
     const fullPrompt = negativePrompt
       ? `${prompt}\n\nAvoid: ${negativePrompt}`
       : prompt;
-    await fillPromptBox(conn.page, fullPrompt, customSelectors);
+    await fillPromptBox(conn.page, fullPrompt, customSelectors, human);
 
     const liveCost = await readLiveCreditCost(conn.page);
     if (liveCost !== null && liveCost > 0 && !spec.confirmCredits) {
@@ -406,9 +423,12 @@ export async function runGeneration(spec) {
       throw err;
     }
 
-    // Üretim öncesi mevcut medya URL'lerini snapshot al
-    const existingMedia = await collectMediaUrls(conn.page, type);
+    // Üretim öncesi mevcut medya URL'lerini (tüm boyut varyantlarıyla) snapshot al
+    await new Promise((r) => setTimeout(r, uploads.length > 0 ? 5500 : 800));
+    const existingMedia = await collectMediaUrls(conn.page, type, { includeAll: true });
     const capturedBuffers = [];
+    let clickedAt = 0;
+    const minGenElapsedMs = uploads.length > 0 ? 7500 : 3500;
 
     const responseHandler = async (res) => {
       try {
@@ -418,13 +438,19 @@ export async function runGeneration(spec) {
           (type === 'video' && /^video\/(mp4|webm)/.test(ct));
         if (!isTargetMedia) return;
         const url = res.url();
-        if (existingMedia.has(url)) return;
+        const key = normalizeMediaKey(url);
+        if (existingMedia.has(key)) return;
         if (isUiAssetUrl(url)) return;
+        // Tıklamadan önceki veya ilk saniyelerdeki lazy-load/referans görsellerini yoksay
+        if (!clickedAt || Date.now() - clickedAt < minGenElapsedMs) {
+          existingMedia.add(key);
+          return;
+        }
         const cl = Number(res.headers()['content-length'] || 0);
         if (cl > 0 && cl < 40_000) return;
         const body = await res.body();
         if (body.length >= 40_000) {
-          capturedBuffers.push({ url, contentType: ct, buffer: body });
+          capturedBuffers.push({ url, key, contentType: ct, buffer: body });
         }
       } catch {
         // ignore
@@ -434,19 +460,20 @@ export async function runGeneration(spec) {
     conn.page.on('response', responseHandler);
 
     onProgress('Üretim başlatılıyor...');
-    await clickGenerateButton(conn.page, customSelectors);
+    clickedAt = Date.now();
+    await clickGenerateButton(conn.page, customSelectors, human);
 
     const timeoutMs = type === 'video' ? cfg.videoTimeoutMs : cfg.generationTimeoutMs;
     const deadline = Date.now() + timeoutMs;
     const downloaded = [];
-    const seenUrls = new Set(existingMedia);
+    const seenKeys = new Set(existingMedia);
 
     onProgress(`Çıktılar bekleniyor (hedef: ${count} adet)...`);
     while (Date.now() < deadline && downloaded.length < count) {
       while (capturedBuffers.length > 0 && downloaded.length < count) {
         const item = capturedBuffers.shift();
-        if (seenUrls.has(item.url)) continue;
-        seenUrls.add(item.url);
+        if (seenKeys.has(item.key)) continue;
+        seenKeys.add(item.key);
         const idx = downloaded.length;
         const ext = guessExtension(item.contentType, type);
         const assetId = assetIds[idx] || `${type === 'video' ? 'vid' : 'img'}_${Date.now()}_${idx}`;
@@ -464,27 +491,30 @@ export async function runGeneration(spec) {
 
       if (downloaded.length >= count) break;
 
-      // DOM'a düşen yeni img/video elementlerini kontrol et
-      const currentMedia = await collectMediaUrls(conn.page, type);
-      for (const url of currentMedia) {
-        if (seenUrls.has(url)) continue;
-        const data = await fetchMediaViaPage(conn.page, url);
-        if (data && data.buffer.length >= 35_000) {
-          seenUrls.add(url);
-          const idx = downloaded.length;
-          const ext = guessExtension(data.contentType, type);
-          const assetId = assetIds[idx] || `${type === 'video' ? 'vid' : 'img'}_${Date.now()}_${idx}`;
-          const safeAspect = aspectRatio.replace(':', 'x');
-          const fileName = `${assetId}_${safeAspect}_${modelId}.${ext}`;
-          const filePath = path.join(outputDir, fileName);
-          fs.writeFileSync(filePath, data.buffer);
-          downloaded.push({
-            assetId,
-            filePath,
-            mimeType: data.contentType,
-            sourceUrl: url
-          });
-          if (downloaded.length >= count) break;
+      // İlk saniyeler dolduktan sonra DOM'a düşen yeni img/video elementlerini kontrol et
+      if (Date.now() - clickedAt >= minGenElapsedMs) {
+        const currentMedia = await collectMediaUrls(conn.page, type, { includeAll: false, returnRaw: true });
+        for (const url of currentMedia) {
+          const key = normalizeMediaKey(url);
+          if (seenKeys.has(key)) continue;
+          const data = await fetchMediaViaPage(conn.page, url);
+          if (data && data.buffer.length >= 35_000) {
+            seenKeys.add(key);
+            const idx = downloaded.length;
+            const ext = guessExtension(data.contentType, type);
+            const assetId = assetIds[idx] || `${type === 'video' ? 'vid' : 'img'}_${Date.now()}_${idx}`;
+            const safeAspect = aspectRatio.replace(':', 'x');
+            const fileName = `${assetId}_${safeAspect}_${modelId}.${ext}`;
+            const filePath = path.join(outputDir, fileName);
+            fs.writeFileSync(filePath, data.buffer);
+            downloaded.push({
+              assetId,
+              filePath,
+              mimeType: data.contentType,
+              sourceUrl: url
+            });
+            if (downloaded.length >= count) break;
+          }
         }
       }
 
@@ -512,7 +542,9 @@ export async function runGeneration(spec) {
       files: downloaded,
       creditsSpent: spent,
       remainingCredits: updatedSession.credits,
-      accountEmail: updatedSession.email || session.email
+      accountEmail: updatedSession.email || session.email,
+      humanize: human.enabled,
+      humanSeed: human.seed
     };
   } finally {
     await conn.disconnect();
@@ -556,7 +588,7 @@ async function pageWaitIdle(page) {
   await new Promise((r) => setTimeout(r, 700));
 }
 
-async function ensureWorkspaceOpen(page) {
+async function ensureWorkspaceOpen(page, human = null) {
   await pageWaitIdle(page);
   const hasPrompt = await page
     .locator('[role="textbox"]')
@@ -570,7 +602,8 @@ async function ensureWorkspaceOpen(page) {
     .getByRole('button', { name: /new project|yeni proje|create project/i })
     .first();
   if (await newProj.isVisible().catch(() => false)) {
-    await newProj.click();
+    if (human) await human.clickLocator(page, newProj);
+    else await newProj.click();
     await page
       .locator('[role="textbox"]')
       .first()
@@ -579,7 +612,11 @@ async function ensureWorkspaceOpen(page) {
   }
 }
 
-async function applySettingsOnPage(page, { type, model, aspectRatio, count, quality }) {
+async function applySettingsOnPage(page, { type, model, aspectRatio, count, quality }, human = null) {
+  const click = async (loc) => (human ? human.clickLocator(page, loc) : loc.click());
+  const wait = async (min, max) =>
+    human ? human.pause(min, max) : new Promise((r) => setTimeout(r, Math.round((min + max) / 2)));
+
   // "Ayarlar tetikleyicisi" / "Settings trigger" butonunu aç
   const trigger = page
     .locator(
@@ -591,15 +628,15 @@ async function applySettingsOnPage(page, { type, model, aspectRatio, count, qual
     return;
   }
 
-  await trigger.click().catch(() => {});
-  await new Promise((r) => setTimeout(r, 450));
+  await click(trigger).catch(() => {});
+  await wait(280, 520);
 
   // 1) Tür seçimi: Resim / Image veya Video
   const typeRx = type === 'image' ? /resim|image/i : /video/i;
   const typeRadio = page.locator('button[role="radio"]').filter({ hasText: typeRx }).first();
   if (await typeRadio.isVisible().catch(() => false)) {
-    await typeRadio.click().catch(() => {});
-    await new Promise((r) => setTimeout(r, 250));
+    await click(typeRadio).catch(() => {});
+    await wait(160, 320);
   }
 
   // 2) En-boy oranı (16:9, 4:3, 1:1, 3:4, 9:16)
@@ -609,8 +646,8 @@ async function applySettingsOnPage(page, { type, model, aspectRatio, count, qual
       .filter({ hasText: new RegExp(`\\b${escapeRegex(aspectRatio)}\\b`) })
       .first();
     if (await ratioRadio.isVisible().catch(() => false)) {
-      await ratioRadio.click().catch(() => {});
-      await new Promise((r) => setTimeout(r, 200));
+      await click(ratioRadio).catch(() => {});
+      await wait(150, 300);
     }
   }
 
@@ -628,8 +665,8 @@ async function applySettingsOnPage(page, { type, model, aspectRatio, count, qual
     const qRx = qMap[quality] || new RegExp(escapeRegex(quality), 'i');
     const qRadio = page.locator('button[role="radio"]').filter({ hasText: qRx }).first();
     if (await qRadio.isVisible().catch(() => false)) {
-      await qRadio.click().catch(() => {});
-      await new Promise((r) => setTimeout(r, 200));
+      await click(qRadio).catch(() => {});
+      await wait(150, 300);
     }
   }
 
@@ -640,8 +677,8 @@ async function applySettingsOnPage(page, { type, model, aspectRatio, count, qual
       .filter({ hasText: new RegExp(`^x${count}$`, 'i') })
       .first();
     if (await countRadio.isVisible().catch(() => false)) {
-      await countRadio.click().catch(() => {});
-      await new Promise((r) => setTimeout(r, 200));
+      await click(countRadio).catch(() => {});
+      await wait(150, 280);
     }
   }
 
@@ -654,16 +691,16 @@ async function applySettingsOnPage(page, { type, model, aspectRatio, count, qual
       const currentTxt = (await modelDropdown.innerText().catch(() => '')).toLowerCase();
       const alreadySelected = model.uiLabels.some((lbl) => currentTxt.includes(lbl.toLowerCase()));
       if (!alreadySelected) {
-        await modelDropdown.click().catch(() => {});
-        await new Promise((r) => setTimeout(r, 300));
+        await click(modelDropdown).catch(() => {});
+        await wait(220, 420);
         for (const label of model.uiLabels) {
           const item = page
             .locator('[role="menuitem"], [role="option"], button')
             .filter({ hasText: new RegExp(escapeRegex(label), 'i') })
             .first();
           if (await item.isVisible().catch(() => false)) {
-            await item.click().catch(() => {});
-            await new Promise((r) => setTimeout(r, 250));
+            await click(item).catch(() => {});
+            await wait(180, 340);
             break;
           }
         }
@@ -673,17 +710,19 @@ async function applySettingsOnPage(page, { type, model, aspectRatio, count, qual
 
   // Ayar popover'ını kapat
   await page.keyboard.press('Escape').catch(() => {});
-  await new Promise((r) => setTimeout(r, 250));
+  await wait(180, 340);
 }
 
-async function uploadReferenceFiles(page, files) {
+async function uploadReferenceFiles(page, files, human = null) {
   if (!files || files.length === 0) return { uploaded: 0 };
+  const click = async (loc) => (human ? human.clickLocator(page, loc) : loc.click());
 
   // 1) Doğrudan mevcut gizli/görünür file input varsa kullan
   const existingInput = page.locator('input[type="file"]').first();
   if ((await existingInput.count()) > 0) {
     await existingInput.setInputFiles(files);
-    await new Promise((r) => setTimeout(r, 1500));
+    if (human) await human.pause(1000, 1800);
+    else await new Promise((r) => setTimeout(r, 1500));
     return { uploaded: files.length, method: 'input' };
   }
 
@@ -696,8 +735,9 @@ async function uploadReferenceFiles(page, files) {
 
   if (await addBtn.isVisible().catch(() => false)) {
     const fcPromise = page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
-    await addBtn.click().catch(() => {});
-    await new Promise((r) => setTimeout(r, 450));
+    await click(addBtn).catch(() => {});
+    if (human) await human.pause(300, 580);
+    else await new Promise((r) => setTimeout(r, 450));
 
     // Menü açıldıysa "Yükle / Upload" seçeneğine tıkla
     const uploadItem = page
@@ -707,11 +747,13 @@ async function uploadReferenceFiles(page, files) {
 
     if (await uploadItem.isVisible().catch(() => false)) {
       const fcMenuPromise = page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
-      await uploadItem.click().catch(() => {});
+      await click(uploadItem).catch(() => {});
       const fc = await fcMenuPromise;
       if (fc) {
         await fc.setFiles(files);
-        await new Promise((r) => setTimeout(r, 1800));
+        if (human) await human.pause(1800, 2900);
+        else await new Promise((r) => setTimeout(r, 2500));
+        await closeOpenOverlays(page);
         return { uploaded: files.length, method: 'filechooser-menu' };
       }
     }
@@ -719,7 +761,9 @@ async function uploadReferenceFiles(page, files) {
     const directFc = await fcPromise;
     if (directFc) {
       await directFc.setFiles(files);
-      await new Promise((r) => setTimeout(r, 1800));
+      if (human) await human.pause(1800, 2900);
+      else await new Promise((r) => setTimeout(r, 2500));
+      await closeOpenOverlays(page);
       return { uploaded: files.length, method: 'filechooser-direct' };
     }
 
@@ -727,7 +771,9 @@ async function uploadReferenceFiles(page, files) {
     const lateInput = page.locator('input[type="file"]').first();
     if ((await lateInput.count()) > 0) {
       await lateInput.setInputFiles(files);
-      await new Promise((r) => setTimeout(r, 1500));
+      if (human) await human.pause(1800, 2900);
+      else await new Promise((r) => setTimeout(r, 2500));
+      await closeOpenOverlays(page);
       return { uploaded: files.length, method: 'late-input' };
     }
   }
@@ -737,7 +783,20 @@ async function uploadReferenceFiles(page, files) {
   );
 }
 
-async function fillPromptBox(page, text, customSelectors = {}) {
+async function closeOpenOverlays(page) {
+  for (let i = 0; i < 3; i++) {
+    const backdrop = page.locator('.cdk-overlay-backdrop-showing').first();
+    if (!(await backdrop.isVisible().catch(() => false))) break;
+    await page.keyboard.press('Escape').catch(() => {});
+    await new Promise((r) => setTimeout(r, 400));
+    if (await backdrop.isVisible().catch(() => false)) {
+      await backdrop.click({ position: { x: 10, y: 10 }, force: true }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+}
+
+async function fillPromptBox(page, text, customSelectors = {}, human = null) {
   const candidates = [
     customSelectors.promptSelector,
     'div[role="textbox"][aria-label*="oluşturmak" i]',
@@ -752,11 +811,15 @@ async function fillPromptBox(page, text, customSelectors = {}) {
   for (const sel of candidates) {
     const loc = page.locator(sel).first();
     if (await loc.isVisible().catch(() => false)) {
-      await loc.click();
-      await page.keyboard.press('Control+A').catch(() => {});
-      await page.keyboard.press('Backspace').catch(() => {});
-      await page.keyboard.insertText(text);
-      await new Promise((r) => setTimeout(r, 250));
+      if (human) {
+        await human.typeText(page, loc, text);
+      } else {
+        await loc.click();
+        await page.keyboard.press('Control+A').catch(() => {});
+        await page.keyboard.press('Backspace').catch(() => {});
+        await page.keyboard.insertText(text);
+        await new Promise((r) => setTimeout(r, 250));
+      }
       return;
     }
   }
@@ -777,11 +840,13 @@ async function readLiveCreditCost(page) {
   });
 }
 
-async function clickGenerateButton(page, customSelectors = {}) {
+async function clickGenerateButton(page, customSelectors = {}, human = null) {
+  const click = async (loc) => (human ? human.clickLocator(page, loc) : loc.click());
+
   if (customSelectors.generateSelector) {
     const custom = page.locator(customSelectors.generateSelector).first();
     if (await custom.isVisible().catch(() => false)) {
-      await custom.click();
+      await click(custom);
       return;
     }
   }
@@ -793,34 +858,45 @@ async function clickGenerateButton(page, customSelectors = {}) {
     .last();
 
   if (await primary.isVisible().catch(() => false)) {
-    await primary.click();
+    await click(primary);
     return;
   }
 
   await page.keyboard.press('Enter');
 }
 
-async function collectMediaUrls(page, type) {
-  const urls = await page.evaluate((mediaType) => {
-    const isIgnored = (u) =>
-      !u ||
-      /gstatic\.com|lh3\.google\.com|lh3\.googleusercontent\.com\/a\/|perlin\.png|favicon/i.test(u);
-    const out = new Set();
-    if (mediaType === 'image') {
-      for (const img of document.querySelectorAll('img')) {
-        if (img.naturalWidth >= 400 && !isIgnored(img.src)) {
-          out.add(img.src);
+function normalizeMediaKey(url) {
+  if (!url) return '';
+  // Google Flow /asb/...=s400-rw vs =s1600-rw aynı görselin farklı boyut varyantlarıdır
+  return String(url).replace(/=[a-zA-Z0-9_-]+$/, '');
+}
+
+async function collectMediaUrls(page, type, { includeAll = false, returnRaw = false } = {}) {
+  const urls = await page.evaluate(
+    ({ mediaType, all }) => {
+      const isIgnored = (u) =>
+        !u ||
+        /gstatic\.com|lh3\.google\.com|lh3\.googleusercontent\.com\/a\/|perlin\.png|favicon/i.test(u);
+      const out = new Set();
+      if (mediaType === 'image') {
+        for (const img of document.querySelectorAll('img')) {
+          const src = img.currentSrc || img.src;
+          if ((all || img.naturalWidth >= 400) && !isIgnored(src)) {
+            out.add(src);
+          }
+        }
+      } else {
+        for (const vid of document.querySelectorAll('video, video source')) {
+          const src = vid.currentSrc || vid.src;
+          if (src && !isIgnored(src)) out.add(src);
         }
       }
-    } else {
-      for (const vid of document.querySelectorAll('video, video source')) {
-        const src = vid.currentSrc || vid.src;
-        if (src && !isIgnored(src)) out.add(src);
-      }
-    }
-    return [...out];
-  }, type);
-  return new Set(urls);
+      return [...out];
+    },
+    { mediaType: type, all: includeAll }
+  );
+  if (returnRaw) return new Set(urls);
+  return new Set(urls.map(normalizeMediaKey));
 }
 
 function isUiAssetUrl(url) {

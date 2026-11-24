@@ -262,6 +262,7 @@ export function registerSystemCommands(program) {
           'Video generation (`video`, `animate`) and >0 credit image tiers (`-q 4k`) MUST run with `--dry-run --json` first.',
           'NEVER pass `--confirm-credits` until the user explicitly approves the estimated credit cost.',
           'Browser runs headless by default; pass `--headed` only when the user wants to watch.',
+          'Humanized mouse/keyboard interactions are ON by default with a fresh random seed per run (`--human-seed <seed>` to pin, `--no-humanize` to disable).',
           'Google Flow Agent Mode is OFF by default; pass `--agent-mode` only if requested.',
           'Auto-prune is OFF by default; pass `--ttl <duration>` (e.g. 5m, 24h, 7d) for temporary files.'
         ],
