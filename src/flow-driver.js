@@ -753,43 +753,45 @@ async function uploadReferenceFiles(page, files, human = null) {
   if (!files || files.length === 0) return { uploaded: 0 };
   const click = async (loc) => (human ? human.clickLocator(page, loc) : loc.click());
 
-  // 1) Doğrudan mevcut gizli/görünür file input varsa kullan
-  const existingInput = page.locator('input[type="file"]').first();
-  if ((await existingInput.count()) > 0) {
-    await existingInput.setInputFiles(files);
-    if (human) await human.pause(1000, 1800);
-    else await new Promise((r) => setTimeout(r, 1500));
-    return { uploaded: files.length, method: 'input' };
+  const wait = async (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // 0) Prompt kutusunu odakla: ekleme butonu ancak composer odaktayken görünür oluyor
+  const promptBox = page.locator('[role="textbox"]').first();
+  if (await promptBox.isVisible().catch(() => false)) {
+    await click(promptBox).catch(() => {});
+    await wait(600);
   }
 
-  // 2) Prompt kutusundaki "+" ("İçerik öğelerini istem kutusuna ekle" / "Add") butonunu aç
+  const afterUpload = async () => {
+    if (human) await human.pause(1800, 2900);
+    else await wait(2500);
+    await closeOpenOverlays(page);
+  };
+
+  // 1) Composer'daki "+" ("İçerik öğelerini istem kutusuna ekle" / "Add content")
   const addBtn = page
     .locator(
-      'button[aria-label*="istem kutusuna ekle" i], button[aria-label*="Add content" i], button[aria-label*="Add media" i], button[aria-label*="Medya menüsü ekle" i]'
+      'button[aria-label*="istem kutusuna ekle" i], button[aria-label*="Add content" i], button[aria-label*="İçerik ekle" i]'
     )
     .last();
 
   if (await addBtn.isVisible().catch(() => false)) {
-    const fcPromise = page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
+    const fcPromise = page.waitForEvent('filechooser', { timeout: 6000 }).catch(() => null);
     await click(addBtn).catch(() => {});
-    if (human) await human.pause(300, 580);
-    else await new Promise((r) => setTimeout(r, 450));
+    await wait(700);
 
-    // Menü açıldıysa "Yükle / Upload" seçeneğine tıkla
     const uploadItem = page
-      .locator('[role="menuitem"], [role="option"], button')
-      .filter({ hasText: /yükle|upload|bilgisayardan|from device|dosya/i })
+      .locator('flow-menu-item, [role="menuitem"], [role="option"], button')
+      .filter({ hasText: /yükle|upload|bilgisayardan|bu cihazdan|from device|dosya seç|görsel yükle/i })
       .first();
 
     if (await uploadItem.isVisible().catch(() => false)) {
-      const fcMenuPromise = page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
+      const fcMenuPromise = page.waitForEvent('filechooser', { timeout: 6000 }).catch(() => null);
       await click(uploadItem).catch(() => {});
       const fc = await fcMenuPromise;
       if (fc) {
         await fc.setFiles(files);
-        if (human) await human.pause(1800, 2900);
-        else await new Promise((r) => setTimeout(r, 2500));
-        await closeOpenOverlays(page);
+        await afterUpload();
         return { uploaded: files.length, method: 'filechooser-menu' };
       }
     }
@@ -797,26 +799,58 @@ async function uploadReferenceFiles(page, files, human = null) {
     const directFc = await fcPromise;
     if (directFc) {
       await directFc.setFiles(files);
-      if (human) await human.pause(1800, 2900);
-      else await new Promise((r) => setTimeout(r, 2500));
-      await closeOpenOverlays(page);
+      await afterUpload();
       return { uploaded: files.length, method: 'filechooser-direct' };
     }
+  }
 
-    // Menü açıldıktan sonra DOM'a file input eklendiyse onu kullan
-    const lateInput = page.locator('input[type="file"]').first();
-    if ((await lateInput.count()) > 0) {
-      await lateInput.setInputFiles(files);
-      if (human) await human.pause(1800, 2900);
-      else await new Promise((r) => setTimeout(r, 2500));
-      await closeOpenOverlays(page);
-      return { uploaded: files.length, method: 'late-input' };
-    }
+  // 2) Menü açıldıktan sonra DOM'a düşen gizli file input
+  const lateInput = page.locator('input[type="file"]').first();
+  for (let i = 0; i < 6 && (await lateInput.count()) === 0; i++) {
+    await wait(400);
+  }
+  if ((await lateInput.count()) > 0) {
+    await lateInput.setInputFiles(files);
+    await afterUpload();
+    return { uploaded: files.length, method: 'late-input' };
+  }
+
+  // 3) Son çare: composer'a sürükle-bırak
+  try {
+    await dropFilesOnComposer(page, files);
+    await afterUpload();
+    return { uploaded: files.length, method: 'drop' };
+  } catch {
+    // aşağıdaki hataya düşer
   }
 
   throw new Error(
     'Referans görsel yükleme alanı bulunamadı. `gflow calibrate` çalıştırıp UI yapısını kontrol edin.'
   );
+}
+
+async function dropFilesOnComposer(page, files) {
+  const target = page.locator('[role="textbox"]').first();
+  const payload = files.map((filePath) => {
+    const ext = path.extname(filePath).toLowerCase().replace('.', '');
+    const mime =
+      ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
+    return { name: path.basename(filePath), type: mime, b64: fs.readFileSync(filePath).toString('base64') };
+  });
+
+  const dataTransfer = await page.evaluateHandle((items) => {
+    const dt = new DataTransfer();
+    for (const item of items) {
+      const bin = atob(item.b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      dt.items.add(new File([bytes], item.name, { type: item.type }));
+    }
+    return dt;
+  }, payload);
+
+  await target.dispatchEvent('dragover', { dataTransfer });
+  await target.dispatchEvent('drop', { dataTransfer });
 }
 
 function extensionFromFileName(name, fallback = 'jpg') {
