@@ -523,6 +523,42 @@ export async function runGeneration(spec) {
 
     conn.page.off('response', responseHandler);
 
+    // 2K/4K: Flow'da yükseltme üretim ayarı değil, indirme menüsündeki "Yükseltilmiş" varyantıdır.
+    // Üretim biter, ardından görselin detay sayfası açılıp yükseltilmiş dosya indirilir.
+    if (type === 'image' && (quality === '2k' || quality === '4k') && downloaded.length > 0) {
+      const tier = quality === '4k' ? '4K' : '2K';
+      onProgress(`${tier} yükseltilmiş görsel alınıyor...`);
+      for (const item of downloaded) {
+        const originalPath = item.filePath;
+        try {
+          const opened = await openAssetDetailByUrl(conn.page, item.sourceUrl, human);
+          if (!opened) continue;
+          const result = await downloadUpscaledAsset(conn.page, {
+            tier,
+            targetPath: originalPath,
+            human
+          });
+          if (result) {
+            item.filePath = result.filePath;
+            item.mimeType = /\.png$/i.test(result.filePath) ? 'image/png' : 'image/jpeg';
+            item.upscaled = true;
+            if (path.resolve(result.filePath) !== path.resolve(originalPath)) {
+              try {
+                fs.unlinkSync(originalPath);
+              } catch {
+                // önizleme silinemezse sorun değil
+              }
+            }
+          }
+        } catch {
+          // yükseltme başarısızsa önizleme dosyası korunur
+        } finally {
+          await conn.page.goBack({ timeout: 15_000 }).catch(() => {});
+          await new Promise((r) => setTimeout(r, 1200));
+        }
+      }
+    }
+
     if (downloaded.length === 0) {
       throw new Error(
         `Zaman aşımı (${Math.round(timeoutMs / 1000)}sn): Google Flow'dan çıktı yakalanamadı. ` +
@@ -781,6 +817,71 @@ async function uploadReferenceFiles(page, files, human = null) {
   throw new Error(
     'Referans görsel yükleme alanı bulunamadı. `gflow calibrate` çalıştırıp UI yapısını kontrol edin.'
   );
+}
+
+function extensionFromFileName(name, fallback = 'jpg') {
+  const m = /\.([a-z0-9]{2,5})$/i.exec(String(name || ''));
+  return m ? m[1].toLowerCase() : fallback;
+}
+
+// Üretilen görselin detay sayfasını (…/edit/<asset>) açar; medya URL'si eşleşmezse false döner.
+async function openAssetDetailByUrl(page, mediaUrl, human = null) {
+  const key = normalizeMediaKey(mediaUrl);
+  const point = await page.evaluate((target) => {
+    const strip = (u) => String(u || '').replace(/=[a-zA-Z0-9_-]+$/, '');
+    const el = [...document.querySelectorAll('img')].find((i) => strip(i.currentSrc || i.src) === target);
+    if (!el) return null;
+    el.scrollIntoView({ block: 'center' });
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }, key);
+  if (!point) return false;
+  await page.mouse.move(point.x, point.y).catch(() => {});
+  await new Promise((r) => setTimeout(r, 450));
+  await page.mouse.click(point.x, point.y).catch(() => {});
+  const navigated = await page
+    .waitForURL(/\/edit\//, { timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false);
+  return navigated || /\/edit\//.test(page.url());
+}
+
+// Flow'un indirme menüsünden "2K/4K Yükseltilmiş" varyantını indirir.
+async function downloadUpscaledAsset(page, { tier, targetPath, human = null }) {
+  const click = async (loc) => (human ? human.clickLocator(page, loc) : loc.click());
+
+  const downloadBtn = page
+    .locator(
+      'button[aria-label*="Medyayı indir" i], button[aria-label*="Download media" i], button[aria-label*="Download" i]'
+    )
+    .first();
+  if (!(await downloadBtn.isVisible().catch(() => false))) return null;
+  await click(downloadBtn).catch(() => {});
+  await new Promise((r) => setTimeout(r, 1400));
+
+  const menuItem = page
+    .locator('flow-menu-item')
+    .filter({ hasText: new RegExp(`^\\s*${tier}\\b`, 'i') })
+    .first();
+  const fallbackItem = page
+    .locator('[role="menuitem"], [role="option"], button')
+    .filter({ hasText: new RegExp(`\\b${tier}\\b`, 'i') })
+    .first();
+  const target = (await menuItem.isVisible().catch(() => false)) ? menuItem : fallbackItem;
+  if (!(await target.isVisible().catch(() => false))) {
+    await page.keyboard.press('Escape').catch(() => {});
+    return null;
+  }
+
+  const downloadPromise = page.waitForEvent('download', { timeout: 180_000 }).catch(() => null);
+  await click(target).catch(() => {});
+  const download = await downloadPromise;
+  if (!download) return null;
+
+  const ext = extensionFromFileName(download.suggestedFilename(), 'jpg');
+  const filePath = targetPath.replace(/\.[a-z0-9]+$/i, `.${ext}`);
+  await download.saveAs(filePath);
+  return { filePath, suggestedFilename: download.suggestedFilename() || '' };
 }
 
 async function closeOpenOverlays(page) {
